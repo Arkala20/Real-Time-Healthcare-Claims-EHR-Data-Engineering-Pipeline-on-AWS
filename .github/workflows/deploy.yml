@@ -1,17 +1,17 @@
 # ============================================================
 # Healthcare Pipeline — CI/CD Deployment
 #
-# Triggers on every push to main, or manually from GitHub UI.
-# Runs two jobs in parallel:
-#   deploy-lambdas  →  package + deploy all 3 Lambda functions
-#   deploy-glue     →  upload ETL scripts to S3
+# Triggers on every push to main.
+# Deploys only what changed using path filters:
+#   - src/lambdas/**  →  package + update Lambda functions
+#   - src/glue/**     →  upload ETL scripts to S3
 #
-# GitHub Secrets (Settings → Secrets and variables → Actions → Secrets):
+# GitHub Secrets required (Settings → Secrets → Actions):
 #   AWS_ACCESS_KEY_ID       your IAM user access key
 #   AWS_SECRET_ACCESS_KEY   your IAM user secret key
 #   LAMBDA_ROLE_ARN         arn:aws:iam::<account>:role/healthcare-lambda-role
 #
-# GitHub Variables (Settings → Secrets and variables → Actions → Variables):
+# GitHub Variables (Settings → Variables → Actions):
 #   AWS_REGION              us-east-2
 #   CMS_RAW_BUCKET          healthcare-cms-claims-raw
 #   EHR_RAW_BUCKET          healthcare-ehr-raw
@@ -29,8 +29,9 @@ name: Deploy Healthcare Pipeline
 on:
   push:
     branches: [main]
-  workflow_dispatch:
+  workflow_dispatch:      # allow manual trigger from GitHub UI
 
+# Prevent concurrent deploys stomping each other
 concurrency:
   group: deploy-${{ github.ref }}
   cancel-in-progress: true
@@ -38,9 +39,32 @@ concurrency:
 jobs:
 
   # ----------------------------------------------------------
-  # Job 1: Package and deploy all 3 Lambda functions
+  # Job 1: Detect which parts of the codebase changed
+  # ----------------------------------------------------------
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      lambdas: ${{ steps.filter.outputs.lambdas }}
+      glue:    ${{ steps.filter.outputs.glue }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect changed paths
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            lambdas:
+              - 'src/lambdas/**'
+            glue:
+              - 'src/glue/**'
+
+  # ----------------------------------------------------------
+  # Job 2: Package and deploy Lambda functions
   # ----------------------------------------------------------
   deploy-lambdas:
+    needs: changes
+    if: needs.changes.outputs.lambdas == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
 
     steps:
@@ -55,13 +79,12 @@ jobs:
         with:
           aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region:            ${{ vars.AWS_REGION }}
+          aws-region:            ${{ secrets.AWS_REGION }}
 
       # ---- cms-claims-generator ----
       - name: Package cms-claims-generator
         run: |
           cd src/lambdas/cms_claims_generator
-          mkdir -p package
           pip install -r requirements.txt -t ./package --quiet
           cp *.py ./package/
           cd package && zip -r ../../../../cms_claims_generator.zip . -x "*.pyc" -x "__pycache__/*"
@@ -69,35 +92,45 @@ jobs:
       - name: Deploy cms-claims-generator
         run: |
           FUNCTION="${{ vars.CMS_LAMBDA_NAME }}"
-          REGION="${{ vars.AWS_REGION }}"
+          ZIP="fileb://cms_claims_generator.zip"
           ROLE="${{ secrets.LAMBDA_ROLE_ARN }}"
+          REGION="${{ vars.AWS_REGION }}"
 
+          # Update code if function exists, otherwise create it
           aws lambda update-function-code \
             --function-name "$FUNCTION" \
-            --zip-file fileb://cms_claims_generator.zip \
+            --zip-file "$ZIP" \
             --region "$REGION" \
           || aws lambda create-function \
             --function-name "$FUNCTION" \
             --runtime python3.11 \
             --role "$ROLE" \
             --handler handler.handler \
-            --zip-file fileb://cms_claims_generator.zip \
+            --zip-file "$ZIP" \
             --timeout 300 \
             --memory-size 512 \
-            --environment "Variables={RAW_CMS_BUCKET=${{ vars.CMS_RAW_BUCKET }},RECORDS_PER_BATCH=500}" \
+            --environment "Variables={ \
+              RAW_CMS_BUCKET=${{ vars.CMS_RAW_BUCKET }}, \
+              RECORDS_PER_BATCH=500 \
+            }" \
             --region "$REGION"
 
-          aws lambda wait function-updated \
+          # Wait for update to finish
+          aws lambda wait function-updated --function-name "$FUNCTION" --region "$REGION"
+
+          # Sync env vars (only runs on update path — no-op on create)
+          aws lambda update-function-configuration \
             --function-name "$FUNCTION" \
-            --region "$REGION"
-
-          echo "cms-claims-generator deployed"
+            --environment "Variables={ \
+              RAW_CMS_BUCKET=${{ vars.CMS_RAW_BUCKET }}, \
+              RECORDS_PER_BATCH=500 \
+            }" \
+            --region "$REGION" 2>/dev/null || true
 
       # ---- fhir-ehr-generator ----
       - name: Package fhir-ehr-generator
         run: |
           cd src/lambdas/fhir_generator
-          mkdir -p package
           pip install -r requirements.txt -t ./package --quiet
           cp *.py ./package/
           cd package && zip -r ../../../../fhir_generator.zip . -x "*.pyc" -x "__pycache__/*"
@@ -105,35 +138,42 @@ jobs:
       - name: Deploy fhir-ehr-generator
         run: |
           FUNCTION="${{ vars.FHIR_LAMBDA_NAME }}"
-          REGION="${{ vars.AWS_REGION }}"
+          ZIP="fileb://fhir_generator.zip"
           ROLE="${{ secrets.LAMBDA_ROLE_ARN }}"
+          REGION="${{ vars.AWS_REGION }}"
 
           aws lambda update-function-code \
             --function-name "$FUNCTION" \
-            --zip-file fileb://fhir_generator.zip \
+            --zip-file "$ZIP" \
             --region "$REGION" \
           || aws lambda create-function \
             --function-name "$FUNCTION" \
             --runtime python3.11 \
             --role "$ROLE" \
             --handler handler.handler \
-            --zip-file fileb://fhir_generator.zip \
+            --zip-file "$ZIP" \
             --timeout 300 \
             --memory-size 512 \
-            --environment "Variables={RAW_EHR_BUCKET=${{ vars.EHR_RAW_BUCKET }},PATIENTS_PER_BATCH=200}" \
+            --environment "Variables={ \
+              RAW_EHR_BUCKET=${{ vars.EHR_RAW_BUCKET }}, \
+              PATIENTS_PER_BATCH=200 \
+            }" \
             --region "$REGION"
 
-          aws lambda wait function-updated \
+          aws lambda wait function-updated --function-name "$FUNCTION" --region "$REGION"
+
+          aws lambda update-function-configuration \
             --function-name "$FUNCTION" \
-            --region "$REGION"
-
-          echo "fhir-ehr-generator deployed"
+            --environment "Variables={ \
+              RAW_EHR_BUCKET=${{ vars.EHR_RAW_BUCKET }}, \
+              PATIENTS_PER_BATCH=200 \
+            }" \
+            --region "$REGION" 2>/dev/null || true
 
       # ---- api-trigger ----
       - name: Package api-trigger
         run: |
           cd src/lambdas/api_trigger
-          mkdir -p package
           pip install -r requirements.txt -t ./package --quiet
           cp *.py ./package/
           cd package && zip -r ../../../../api_trigger.zip . -x "*.pyc" -x "__pycache__/*"
@@ -141,34 +181,44 @@ jobs:
       - name: Deploy api-trigger
         run: |
           FUNCTION="${{ vars.TRIGGER_LAMBDA_NAME }}"
-          REGION="${{ vars.AWS_REGION }}"
+          ZIP="fileb://api_trigger.zip"
           ROLE="${{ secrets.LAMBDA_ROLE_ARN }}"
+          REGION="${{ vars.AWS_REGION }}"
 
           aws lambda update-function-code \
             --function-name "$FUNCTION" \
-            --zip-file fileb://api_trigger.zip \
+            --zip-file "$ZIP" \
             --region "$REGION" \
           || aws lambda create-function \
             --function-name "$FUNCTION" \
             --runtime python3.11 \
             --role "$ROLE" \
             --handler handler.handler \
-            --zip-file fileb://api_trigger.zip \
+            --zip-file "$ZIP" \
             --timeout 30 \
             --memory-size 128 \
-            --environment "Variables={CMS_LAMBDA_NAME=${{ vars.CMS_LAMBDA_NAME }},FHIR_LAMBDA_NAME=${{ vars.FHIR_LAMBDA_NAME }}}" \
+            --environment "Variables={ \
+              CMS_LAMBDA_NAME=${{ vars.CMS_LAMBDA_NAME }}, \
+              FHIR_LAMBDA_NAME=${{ vars.FHIR_LAMBDA_NAME }} \
+            }" \
             --region "$REGION"
 
-          aws lambda wait function-updated \
+          aws lambda wait function-updated --function-name "$FUNCTION" --region "$REGION"
+
+          aws lambda update-function-configuration \
             --function-name "$FUNCTION" \
-            --region "$REGION"
-
-          echo "api-trigger deployed"
+            --environment "Variables={ \
+              CMS_LAMBDA_NAME=${{ vars.CMS_LAMBDA_NAME }}, \
+              FHIR_LAMBDA_NAME=${{ vars.FHIR_LAMBDA_NAME }} \
+            }" \
+            --region "$REGION" 2>/dev/null || true
 
   # ----------------------------------------------------------
-  # Job 2: Upload Glue ETL scripts to S3
+  # Job 3: Upload Glue ETL scripts to S3
   # ----------------------------------------------------------
   deploy-glue:
+    needs: changes
+    if: needs.changes.outputs.glue == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
 
     steps:
@@ -189,25 +239,24 @@ jobs:
           aws s3 cp src/glue/ehr_fhir_etl.py \
             s3://${{ vars.CMS_RAW_BUCKET }}/glue-scripts/ehr_fhir_etl.py
 
-          echo "Uploaded:"
+          echo "Scripts uploaded:"
           echo "  s3://${{ vars.CMS_RAW_BUCKET }}/glue-scripts/cms_claims_etl.py"
           echo "  s3://${{ vars.CMS_RAW_BUCKET }}/glue-scripts/ehr_fhir_etl.py"
 
       - name: Update Glue job script locations
         run: |
           REGION="${{ vars.AWS_REGION }}"
-          SCRIPTS_BUCKET="${{ vars.CMS_RAW_BUCKET }}"
 
           aws glue update-job \
             --job-name "${{ vars.CMS_GLUE_JOB }}" \
-            --job-update "Command={Name=glueetl,ScriptLocation=s3://${SCRIPTS_BUCKET}/glue-scripts/cms_claims_etl.py,PythonVersion=3}" \
-            --region "$REGION" \
+            --job-update "Command={Name=glueetl,ScriptLocation=s3://${{ vars.CMS_RAW_BUCKET }}/glue-scripts/cms_claims_etl.py,PythonVersion=3}" \
+            --region "$REGION" 2>/dev/null \
           && echo "Updated Glue job: ${{ vars.CMS_GLUE_JOB }}" \
-          || echo "WARNING: ${{ vars.CMS_GLUE_JOB }} not found — create it in Glue console first."
+          || echo "Glue job ${{ vars.CMS_GLUE_JOB }} not found — create it manually in console first."
 
           aws glue update-job \
             --job-name "${{ vars.EHR_GLUE_JOB }}" \
-            --job-update "Command={Name=glueetl,ScriptLocation=s3://${SCRIPTS_BUCKET}/glue-scripts/ehr_fhir_etl.py,PythonVersion=3}" \
-            --region "$REGION" \
+            --job-update "Command={Name=glueetl,ScriptLocation=s3://${{ vars.CMS_RAW_BUCKET }}/glue-scripts/ehr_fhir_etl.py,PythonVersion=3}" \
+            --region "$REGION" 2>/dev/null \
           && echo "Updated Glue job: ${{ vars.EHR_GLUE_JOB }}" \
-          || echo "WARNING: ${{ vars.EHR_GLUE_JOB }} not found — create it in Glue console first."
+          || echo "Glue job ${{ vars.EHR_GLUE_JOB }} not found — create it manually in console first."
