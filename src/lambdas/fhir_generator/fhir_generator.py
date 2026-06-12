@@ -21,6 +21,7 @@ Usage:
     python fhir_generator.py --patients 500 --output ./data/raw/ehr/
 """
 
+
 import argparse
 import json
 import os

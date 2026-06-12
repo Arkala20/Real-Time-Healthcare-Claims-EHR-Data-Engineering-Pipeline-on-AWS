@@ -22,6 +22,7 @@ import boto3
 
 from fhir_generator import generate_bundle
 
+
 s3 = boto3.client("s3")
 
 
