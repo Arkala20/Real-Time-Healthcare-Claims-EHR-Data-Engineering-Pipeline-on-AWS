@@ -14,6 +14,7 @@ Source tables processed (read from separate S3 prefixes):
   - carrier_claims        → fact_claims (carrier rows, denial flags)
   - prescription_drug_events → fact_prescription_events (drug, cost, days supply)
 
+  
 Transformation groups applied per table (see individual functions below):
   1. rename_columns          — standardize to snake_case warehouse column names
   2. cast_types              — enforce correct Spark types (DateType, DecimalType, etc.)
@@ -40,6 +41,7 @@ from pyspark.context import SparkContext
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql import types as T
+
 
 
 # ---------------------------------------------------------------------------
