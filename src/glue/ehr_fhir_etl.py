@@ -16,6 +16,7 @@ FHIR resources processed (extracted from Bundle.entry[]):
   - AllergyIntolerance  → fact_allergies
   - Immunization        → fact_immunizations
 
+  
 Transformation groups applied:
   1. flatten_bundle      — explode Bundle.entry[], extract resourceType, route to handler
   2. flatten_patient     — extract nested name, address, extension (race/ethnicity)
