@@ -90,6 +90,21 @@ def filter_by_resource_type(df: DataFrame, resource_type: str) -> DataFrame:
     pass
 
 
+# resource.name is inferred as string by Spark because Organization.name is a plain
+# string while Patient/Practitioner.name is an array of structs — use from_json to
+# re-parse it after filtering to the correct resource type.
+_PATIENT_NAME_SCHEMA = T.ArrayType(T.StructType([
+    T.StructField("family", T.StringType()),
+    T.StructField("given",  T.ArrayType(T.StringType())),
+]))
+
+_PROVIDER_NAME_SCHEMA = T.ArrayType(T.StructType([
+    T.StructField("family", T.StringType()),
+    T.StructField("given",  T.ArrayType(T.StringType())),
+    T.StructField("prefix", T.ArrayType(T.StringType())),
+]))
+
+
 # ---------------------------------------------------------------------------
 # Transformation group 2: Patient flattening
 # ---------------------------------------------------------------------------
@@ -101,8 +116,21 @@ def flatten_patient(df: DataFrame) -> DataFrame:
               birthDate, address.line[0], address.city, address.state,
               address.postalCode, extension (race, ethnicity)
     """
-    # TODO: use F.col("resource.id"), F.col("resource.name")[0]["family"], etc.
-    pass
+    name = F.from_json(F.col("resource.name").cast("string"), _PATIENT_NAME_SCHEMA)
+    return df.select(
+        F.col("resource.id").alias("patient_id"),
+        name[0]["family"].alias("last_name"),
+        name[0]["given"][0].alias("first_name"),
+        F.col("resource.gender").alias("gender"),
+        F.col("resource.birthDate").alias("birth_date"),
+        F.col("resource.identifier")[0]["value"].alias("mrn"),
+        F.col("resource.address")[0]["line"][0].alias("address_line"),
+        F.col("resource.address")[0]["city"].alias("city"),
+        F.col("resource.address")[0]["state"].alias("state"),
+        F.col("resource.address")[0]["postalCode"].alias("postal_code"),
+        F.col("resource.extension")[0]["valueString"].alias("race"),
+        F.col("resource.extension")[1]["valueString"].alias("ethnicity"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -312,6 +340,20 @@ def process_medications(spark: SparkSession, bundles_df: DataFrame, clean_bucket
     # TODO: filter → flatten → enrich_rxnorm_codes → derive_medication_flags →
     #        generate_surrogate_key → write_parquet
     pass
+
+
+def flatten_practitioner(df: DataFrame) -> DataFrame:
+    """Flatten FHIR Practitioner resource into tabular columns."""
+    name = F.from_json(F.col("resource.name").cast("string"), _PROVIDER_NAME_SCHEMA)
+    return df.select(
+        F.col("resource.id").alias("provider_id"),
+        name[0]["family"].alias("last_name"),
+        name[0]["given"][0].alias("first_name"),
+        name[0]["prefix"][0].alias("prefix"),
+        F.col("resource.gender").alias("gender"),
+        F.col("resource.identifier")[0]["value"].alias("npi"),
+        F.col("resource.qualification")[0]["code"]["coding"][0]["code"].alias("specialty_code"),
+    )
 
 
 def process_practitioners(spark: SparkSession, bundles_df: DataFrame, clean_bucket: str) -> None:
