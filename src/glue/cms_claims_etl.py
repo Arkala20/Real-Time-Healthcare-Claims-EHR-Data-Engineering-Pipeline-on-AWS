@@ -438,11 +438,10 @@ def process_beneficiary(spark: SparkSession, raw_bucket: str, clean_bucket: str)
     df = decode_race(df)
     df = handle_beneficiary_nulls(df)
     df = deduplicate(df, ["patient_id"])
-    df = derive_date_fields(df, "birth_date")
     df = derive_patient_age(df)
     df = add_patient_risk_flags(df)
     df = generate_surrogate_key(df, "patient_id", "patient_key")
-    write_parquet(df, clean_bucket, "dim_patient", ["year"])
+    write_parquet(df, clean_bucket, "dim_patient", ["risk_tier"])
 
 
 def process_providers(spark: SparkSession, raw_bucket: str, clean_bucket: str) -> None:
