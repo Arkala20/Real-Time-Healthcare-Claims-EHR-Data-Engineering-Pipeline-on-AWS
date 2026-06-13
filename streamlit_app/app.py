@@ -62,7 +62,7 @@ st.title("🏥 Healthcare Claims & EHR Dashboard")
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 
-tab_overview, tab_cms, tab_ehr = st.tabs(["Overview", "CMS Claims", "EHR"])
+tab_overview, tab_cms, tab_ehr, tab_diag = st.tabs(["Overview", "CMS Claims", "EHR", "Diagnostics"])
 
 # ════════════════════════════════════════════════════════════════════════════
 # TAB 1 — OVERVIEW
@@ -290,7 +290,7 @@ with tab_ehr:
             st.error(f"Error: {e}")
 
     # Abnormal lab results
-    with col_r2:
+    with col_r2:  # noqa
         st.subheader("Abnormal Lab Results by Category")
         try:
             df = run_query(queries.ABNORMAL_LABS)
@@ -318,3 +318,146 @@ with tab_ehr:
             st.plotly_chart(fig2, use_container_width=True)
         except Exception as e:
             st.error(f"Error: {e}")
+
+# ════════════════════════════════════════════════════════════════════════════
+# TAB 4 — DIAGNOSTICS
+# ════════════════════════════════════════════════════════════════════════════
+
+with tab_diag:
+    st.subheader("Table Row Counts")
+    st.caption("Check how many rows Snowpipe has loaded into each table.")
+    try:
+        df = run_query(queries.TABLE_ROW_COUNTS)
+        total = int(df["ROW_COUNT"].sum())
+        if total == 0:
+            st.warning("All tables are empty — Snowpipe may not have loaded data yet. Run your Glue jobs and wait ~60 seconds.")
+        else:
+            empty = df[df["ROW_COUNT"] == 0]["TABLE_NAME"].tolist()
+            if empty:
+                st.warning(f"These tables have 0 rows: {', '.join(empty)}")
+            fig = px.bar(
+                df,
+                x="TABLE_NAME",
+                y="ROW_COUNT",
+                color="ROW_COUNT",
+                color_continuous_scale="Blues",
+                text="ROW_COUNT",
+                title="Rows per Table",
+            )
+            fig.update_layout(xaxis_tickangle=-30)
+            fig.update_traces(textposition="outside")
+            st.plotly_chart(fig, use_container_width=True)
+            st.dataframe(df, use_container_width=True)
+    except Exception as e:
+        st.error(f"Error: {e}")
+
+    st.divider()
+
+    # Null analysis
+    st.subheader("Null Analysis")
+    st.caption("For each key table, shows how many rows have non-null values in each column.")
+
+    col_a, col_b = st.columns(2)
+
+    with col_a:
+        st.markdown("**dim_patient_cms**")
+        try:
+            df = run_query(queries.NULL_CHECK_CMS_PATIENT)
+            total = int(df["TOTAL_ROWS"].iloc[0])
+            if total == 0:
+                st.info("Table is empty.")
+            else:
+                melted = df.melt(var_name="Column", value_name="Non-Null Count")
+                melted = melted[melted["Column"] != "TOTAL_ROWS"]
+                melted["Null %"] = round((1 - melted["Non-Null Count"] / total) * 100, 1)
+                melted["Fill %"] = 100 - melted["Null %"]
+                fig = px.bar(
+                    melted, x="Column", y="Fill %",
+                    color="Fill %", color_continuous_scale="RdYlGn",
+                    range_color=[0, 100],
+                    title=f"Column fill rate (total rows: {total:,})",
+                    text="Fill %",
+                )
+                fig.update_traces(texttemplate="%{text}%", textposition="outside")
+                fig.update_layout(xaxis_tickangle=-30, yaxis_range=[0, 110])
+                st.plotly_chart(fig, use_container_width=True)
+        except Exception as e:
+            st.error(f"Error: {e}")
+
+    with col_b:
+        st.markdown("**fact_claims**")
+        try:
+            df = run_query(queries.NULL_CHECK_FACT_CLAIMS)
+            total = int(df["TOTAL_ROWS"].iloc[0])
+            if total == 0:
+                st.info("Table is empty.")
+            else:
+                melted = df.melt(var_name="Column", value_name="Non-Null Count")
+                melted = melted[melted["Column"] != "TOTAL_ROWS"]
+                melted["Fill %"] = round(melted["Non-Null Count"] / total * 100, 1)
+                fig = px.bar(
+                    melted, x="Column", y="Fill %",
+                    color="Fill %", color_continuous_scale="RdYlGn",
+                    range_color=[0, 100],
+                    title=f"Column fill rate (total rows: {total:,})",
+                    text="Fill %",
+                )
+                fig.update_traces(texttemplate="%{text}%", textposition="outside")
+                fig.update_layout(xaxis_tickangle=-30, yaxis_range=[0, 110])
+                st.plotly_chart(fig, use_container_width=True)
+        except Exception as e:
+            st.error(f"Error: {e}")
+
+    st.markdown("**fact_encounters**")
+    try:
+        df = run_query(queries.NULL_CHECK_EHR_ENCOUNTERS)
+        total = int(df["TOTAL_ROWS"].iloc[0])
+        if total == 0:
+            st.info("Table is empty.")
+        else:
+            melted = df.melt(var_name="Column", value_name="Non-Null Count")
+            melted = melted[melted["Column"] != "TOTAL_ROWS"]
+            melted["Fill %"] = round(melted["Non-Null Count"] / total * 100, 1)
+            fig = px.bar(
+                melted, x="Column", y="Fill %",
+                color="Fill %", color_continuous_scale="RdYlGn",
+                range_color=[0, 100],
+                title=f"Column fill rate (total rows: {total:,})",
+                text="Fill %",
+            )
+            fig.update_traces(texttemplate="%{text}%", textposition="outside")
+            fig.update_layout(xaxis_tickangle=-30, yaxis_range=[0, 110])
+            st.plotly_chart(fig, use_container_width=True)
+    except Exception as e:
+        st.error(f"Error: {e}")
+
+    st.divider()
+
+    # Sample data viewer
+    st.subheader("Sample Data Viewer")
+    sample_table = st.selectbox(
+        "Pick a table to preview (5 rows):",
+        ["dim_patient_cms", "fact_claims", "fact_encounters", "fact_conditions"],
+    )
+    sample_map = {
+        "dim_patient_cms":  queries.SAMPLE_CMS_PATIENT,
+        "fact_claims":      queries.SAMPLE_FACT_CLAIMS,
+        "fact_encounters":  queries.SAMPLE_ENCOUNTERS,
+        "fact_conditions":  queries.SAMPLE_CONDITIONS,
+    }
+    try:
+        df = run_query(sample_map[sample_table])
+        if df.empty:
+            st.info("No rows yet.")
+        else:
+            st.dataframe(df, use_container_width=True)
+            null_pct = (df.isnull().sum() / len(df) * 100).reset_index()
+            null_pct.columns = ["Column", "Null %"]
+            null_pct = null_pct[null_pct["Null %"] > 0].sort_values("Null %", ascending=False)
+            if not null_pct.empty:
+                st.markdown("**Columns with nulls in this sample:**")
+                st.dataframe(null_pct, use_container_width=True)
+            else:
+                st.success("No nulls in this 5-row sample.")
+    except Exception as e:
+        st.error(f"Error: {e}")
