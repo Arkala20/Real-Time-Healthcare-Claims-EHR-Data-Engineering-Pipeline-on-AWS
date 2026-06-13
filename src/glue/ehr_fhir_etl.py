@@ -403,11 +403,13 @@ def flatten_practitioner(df: DataFrame) -> DataFrame:
 
 
 def process_practitioners(spark: SparkSession, bundles_df: DataFrame, clean_bucket: str) -> None:
-    df = filter_by_resource_type(bundles_df, "Practitioner").select(
+    pract_df = filter_by_resource_type(bundles_df, "Practitioner")
+    name = F.from_json(F.col("resource.name").cast("string"), _PROVIDER_NAME_SCHEMA)
+    df = pract_df.select(
         F.col("resource.id").alias("practitioner_id"),
         F.col("resource.identifier")[0]["value"].alias("npi"),
-        F.col("resource.name")[0]["family"].alias("family_name"),
-        F.col("resource.name")[0]["given"][0].alias("given_name"),
+        name[0]["family"].alias("family_name"),
+        name[0]["given"][0].alias("given_name"),
         F.col("resource.qualification")[0]["code"]["coding"][0]["code"].alias("specialty_code"),
         F.col("resource.qualification")[0]["code"]["coding"][0]["display"].alias("specialty_name"),
     )
