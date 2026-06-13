@@ -127,6 +127,7 @@ def flatten_patient(df: DataFrame) -> DataFrame:
 
 def flatten_encounter(df: DataFrame) -> DataFrame:
     # `class` is a reserved word — use getField() to avoid parser issues
+    # extension uses valueMoney (not valueDecimal) — generator outputs {"url":"totalCost","valueMoney":{...}}
     return filter_by_resource_type(df, "Encounter").select(
         F.col("resource.id").alias("encounter_id"),
         F.col("resource.status").alias("status"),
@@ -135,7 +136,7 @@ def flatten_encounter(df: DataFrame) -> DataFrame:
         F.col("resource.period.start").alias("period_start"),
         F.col("resource.period.end").alias("period_end"),
         F.col("resource.reasonCode")[0]["coding"][0]["code"].alias("reason_icd10"),
-        F.col("resource.extension")[0]["valueDecimal"].alias("total_cost"),
+        F.col("resource.extension")[0]["valueMoney"]["value"].alias("total_cost"),
     )
 
 
@@ -163,10 +164,13 @@ def flatten_condition(df: DataFrame) -> DataFrame:
 # ---------------------------------------------------------------------------
 
 def flatten_observation(df: DataFrame) -> DataFrame:
+    # resource.category conflicts: AllergyIntolerance uses ["food"] (string array) while
+    # Observation uses [{coding:[...]}] (struct array). Spark merges both to StringType,
+    # so struct access fails. Use get_json_object on the string element instead.
     return filter_by_resource_type(df, "Observation").select(
         F.col("resource.id").alias("observation_id"),
         F.col("resource.status").alias("status"),
-        F.col("resource.category")[0]["coding"][0]["code"].alias("category"),
+        F.get_json_object(F.col("resource.category")[0], "$.coding[0].code").alias("category"),
         F.col("resource.code.coding")[0]["code"].alias("loinc_code"),
         F.col("resource.code.coding")[0]["display"].alias("loinc_display"),
         F.col("resource.subject.reference").alias("patient_ref"),
@@ -405,13 +409,13 @@ def flatten_practitioner(df: DataFrame) -> DataFrame:
 def process_practitioners(spark: SparkSession, bundles_df: DataFrame, clean_bucket: str) -> None:
     pract_df = filter_by_resource_type(bundles_df, "Practitioner")
     name = F.from_json(F.col("resource.name").cast("string"), _PROVIDER_NAME_SCHEMA)
+    # qualification.code.coding has only {system, code} — no display field in generator output
     df = pract_df.select(
         F.col("resource.id").alias("practitioner_id"),
         F.col("resource.identifier")[0]["value"].alias("npi"),
         name[0]["family"].alias("family_name"),
         name[0]["given"][0].alias("given_name"),
         F.col("resource.qualification")[0]["code"]["coding"][0]["code"].alias("specialty_code"),
-        F.col("resource.qualification")[0]["code"]["coding"][0]["display"].alias("specialty_name"),
     )
     df = df.dropDuplicates(["npi"])
     df = generate_surrogate_key(df, "practitioner_id", "provider_key")
@@ -461,7 +465,7 @@ def process_procedures(spark: SparkSession, bundles_df: DataFrame, clean_bucket:
         F.col("resource.subject.reference").alias("patient_ref"),
         F.col("resource.encounter.reference").alias("encounter_ref"),
         F.col("resource.performedDateTime").alias("performed_datetime"),
-        F.col("resource.extension")[0]["valueDecimal"].alias("procedure_cost"),
+        F.col("resource.extension")[0]["valueMoney"]["value"].alias("procedure_cost"),
     )
     df = normalize_timestamps(df, ["performed_datetime"])
     df = generate_surrogate_key(df, "procedure_id", "procedure_key")
