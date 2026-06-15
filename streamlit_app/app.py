@@ -40,6 +40,10 @@ def run_query(sql: str) -> pd.DataFrame:
     return df
 
 
+def chart(fig):
+    st.plotly_chart(fig, use_container_width=True)
+
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
 with st.sidebar:
@@ -49,415 +53,332 @@ with st.sidebar:
     st.info(
         f"**Snowflake**\n\n"
         f"Account: `{os.environ.get('SNOWFLAKE_ACCOUNT', 'not set')}`\n\n"
-        f"Database: `{os.environ.get('SNOWFLAKE_DATABASE', 'healthcare')}`\n\n"
-        f"Schema: `{os.environ.get('SNOWFLAKE_SCHEMA', 'raw')}`"
+        f"DB / Schema: `{os.environ.get('SNOWFLAKE_DATABASE', 'healthcare')}`"
+        f" / `{os.environ.get('SNOWFLAKE_SCHEMA', 'raw')}`"
     )
     if st.button("Clear cache & refresh"):
         st.cache_data.clear()
         st.rerun()
 
-# ── Title ─────────────────────────────────────────────────────────────────────
-
 st.title("🏥 Healthcare Claims & EHR Dashboard")
 
-# ── Tabs ──────────────────────────────────────────────────────────────────────
-
-tab_overview, tab_cms, tab_ehr, tab_diag = st.tabs(["Overview", "CMS Claims", "EHR", "Diagnostics"])
+tab_overview, tab_cms, tab_ehr, tab_diag = st.tabs(
+    ["Overview", "CMS Claims", "EHR", "Diagnostics"]
+)
 
 # ════════════════════════════════════════════════════════════════════════════
-# TAB 1 — OVERVIEW
+# OVERVIEW
 # ════════════════════════════════════════════════════════════════════════════
 
 with tab_overview:
-    st.subheader("Pipeline KPIs")
-
     try:
-        kpi = run_query(queries.KPI_SUMMARY).iloc[0]
-
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("CMS Patients",       f"{int(kpi['CMS_PATIENTS']):,}")
-        col2.metric("Total Claims",        f"{int(kpi['TOTAL_CLAIMS']):,}")
-        col3.metric("Total Claims Spend",  f"${int(kpi['TOTAL_CLAIMS_SPEND']):,}")
-        col4.metric("Total Prescriptions", f"{int(kpi['TOTAL_PRESCRIPTIONS']):,}")
-
-        col5, col6, col7, col8 = st.columns(4)
-        col5.metric("EHR Patients",       f"{int(kpi['EHR_PATIENTS']):,}")
-        col6.metric("Total Encounters",   f"{int(kpi['TOTAL_ENCOUNTERS']):,}")
-        col7.metric("Total Conditions",   f"{int(kpi['TOTAL_CONDITIONS']):,}")
-        col8.metric("Total Observations", f"{int(kpi['TOTAL_OBSERVATIONS']):,}")
-
+        k = run_query(queries.KPI_SUMMARY).iloc[0]
+        c1, c2, c3 = st.columns(3)
+        c1.metric("CMS Patients",       f"{int(k['CMS_PATIENTS']):,}")
+        c2.metric("Total Claims",        f"{int(k['TOTAL_CLAIMS']):,}")
+        c3.metric("Claims Spend",        f"${int(k['TOTAL_CLAIMS_SPEND']):,}")
+        c4, c5, c6 = st.columns(3)
+        c4.metric("EHR Patients",        f"{int(k['EHR_PATIENTS']):,}")
+        c5.metric("Encounters",          f"{int(k['TOTAL_ENCOUNTERS']):,}")
+        c6.metric("Prescriptions",       f"{int(k['TOTAL_PRESCRIPTIONS']):,}")
+        c7, c8, _ = st.columns(3)
+        c7.metric("Medications (EHR)",   f"{int(k['TOTAL_MEDICATIONS']):,}")
+        c8.metric("Observations (EHR)",  f"{int(k['TOTAL_OBSERVATIONS']):,}")
     except Exception as e:
-        st.error(f"Could not load KPIs: {e}")
+        st.error(f"KPI error: {e}")
 
     st.divider()
+    col_l, col_r = st.columns(2)
 
-    col_left, col_right = st.columns(2)
-
-    # Risk tier pie
-    with col_left:
-        st.subheader("Patient Risk Tier Distribution")
+    with col_l:
+        st.subheader("Patient Risk Distribution")
         try:
-            df = run_query(queries.RISK_TIER_DISTRIBUTION)
+            df = run_query(queries.RISK_SCORE_DISTRIBUTION)
             fig = px.pie(
-                df,
-                names="RISK_TIER",
-                values="PATIENT_COUNT",
-                color_discrete_sequence=px.colors.sequential.RdBu,
-                hole=0.35,
+                df, names="RISK_TIER", values="PATIENT_COUNT",
+                color_discrete_sequence=["#2ecc71", "#f39c12", "#e74c3c"],
+                hole=0.4,
             )
             fig.update_traces(textposition="inside", textinfo="percent+label")
-            st.plotly_chart(fig, use_container_width=True)
+            chart(fig)
         except Exception as e:
             st.error(f"Error: {e}")
 
-    # Medication chronic vs acute
-    with col_right:
-        st.subheader("Medication Type Split")
+    with col_r:
+        st.subheader("Patient Age Group")
         try:
-            df = run_query(queries.MEDICATION_SPLIT)
-            fig = px.pie(
-                df,
-                names="MEDICATION_TYPE",
-                values="PRESCRIPTION_COUNT",
-                color_discrete_sequence=["#636EFA", "#EF553B"],
-                hole=0.35,
+            df = run_query(queries.PATIENT_AGE_GROUP)
+            fig = px.bar(
+                df, x="AGE_GROUP", y="PATIENT_COUNT",
+                color="AVG_RISK_SCORE", color_continuous_scale="Reds",
+                text="PATIENT_COUNT",
+                labels={"PATIENT_COUNT": "Patients", "AGE_GROUP": "Age Group", "AVG_RISK_SCORE": "Avg Risk"},
             )
-            fig.update_traces(textposition="inside", textinfo="percent+label")
-            st.plotly_chart(fig, use_container_width=True)
+            fig.update_traces(textposition="outside")
+            chart(fig)
         except Exception as e:
             st.error(f"Error: {e}")
+
+    st.subheader("Gender × Race Breakdown")
+    try:
+        df = run_query(queries.PATIENT_GENDER_RACE)
+        fig = px.bar(
+            df, x="RACE_LABEL", y="PATIENT_COUNT",
+            color="GENDER_LABEL", barmode="group",
+            labels={"PATIENT_COUNT": "Patients", "RACE_LABEL": "Race", "GENDER_LABEL": "Gender"},
+        )
+        chart(fig)
+    except Exception as e:
+        st.error(f"Error: {e}")
+
 
 # ════════════════════════════════════════════════════════════════════════════
-# TAB 2 — CMS CLAIMS
+# CMS CLAIMS
 # ════════════════════════════════════════════════════════════════════════════
 
 with tab_cms:
 
-    # Claims volume over time
-    st.subheader("Claims Volume & Cost by Month")
+    # Claims over time
+    st.subheader("Claims Volume & Spend by Month")
     try:
         df = run_query(queries.CLAIMS_BY_MONTH)
         col_l, col_r = st.columns(2)
         with col_l:
-            fig = px.line(
-                df,
-                x="MONTH_LABEL",
-                y="CLAIM_COUNT",
-                color="CLAIM_TYPE",
-                markers=True,
-                title="Claim Count by Month",
-                labels={"MONTH_LABEL": "Month", "CLAIM_COUNT": "Claims", "CLAIM_TYPE": "Type"},
-            )
-            st.plotly_chart(fig, use_container_width=True)
-        with col_r:
             fig = px.bar(
-                df,
-                x="MONTH_LABEL",
-                y="TOTAL_PAYMENT",
-                color="CLAIM_TYPE",
-                title="Total Payment by Month ($)",
-                labels={"MONTH_LABEL": "Month", "TOTAL_PAYMENT": "Total Payment ($)", "CLAIM_TYPE": "Type"},
+                df, x="MONTH_LABEL", y="CLAIM_COUNT",
+                text="CLAIM_COUNT",
+                labels={"MONTH_LABEL": "Month", "CLAIM_COUNT": "Claims"},
+                title="Claim Count per Month",
             )
-            st.plotly_chart(fig, use_container_width=True)
+            fig.update_traces(textposition="outside")
+            chart(fig)
+        with col_r:
+            fig = px.line(
+                df, x="MONTH_LABEL", y="TOTAL_PAYMENT",
+                markers=True,
+                labels={"MONTH_LABEL": "Month", "TOTAL_PAYMENT": "Total Payment ($)"},
+                title="Total Payment per Month",
+            )
+            chart(fig)
     except Exception as e:
         st.error(f"Error: {e}")
 
     st.divider()
 
-    # Top drugs
-    st.subheader("Top 10 Prescribed Drugs")
-    try:
-        df = run_query(queries.TOP_DRUGS)
-        fig = px.bar(
-            df,
-            x="PRESCRIPTION_COUNT",
-            y="GENERIC_NAME",
-            orientation="h",
-            color="TOTAL_COST",
-            color_continuous_scale="Blues",
-            text="PRESCRIPTION_COUNT",
-            title="Prescriptions by Drug (colored by total cost)",
-            labels={"PRESCRIPTION_COUNT": "Prescriptions", "GENERIC_NAME": "Drug"},
-        )
-        fig.update_layout(yaxis={"categoryorder": "total ascending"})
-        st.plotly_chart(fig, use_container_width=True)
+    # Payment buckets
+    col_l, col_r = st.columns(2)
+    with col_l:
+        st.subheader("Payment Amount Buckets")
+        try:
+            df = run_query(queries.PAYMENT_BUCKETS)
+            fig = px.bar(
+                df, x="PAYMENT_BUCKET", y="CLAIM_COUNT",
+                color="TOTAL_PAYMENT", color_continuous_scale="Blues",
+                text="CLAIM_COUNT",
+                labels={"PAYMENT_BUCKET": "Bucket", "CLAIM_COUNT": "Claims"},
+            )
+            fig.update_traces(textposition="outside")
+            chart(fig)
+        except Exception as e:
+            st.error(f"Error: {e}")
 
-        with st.expander("View raw data"):
-            st.dataframe(df, use_container_width=True)
-    except Exception as e:
-        st.error(f"Error: {e}")
+    with col_r:
+        st.subheader("Top 10 Prescribed Drugs")
+        try:
+            df = run_query(queries.TOP_DRUGS)
+            fig = px.bar(
+                df, x="PRESCRIPTION_COUNT", y="GENERIC_NAME",
+                orientation="h",
+                color="TOTAL_COST", color_continuous_scale="Purples",
+                text="PRESCRIPTION_COUNT",
+                labels={"PRESCRIPTION_COUNT": "Prescriptions", "GENERIC_NAME": "Drug"},
+            )
+            fig.update_layout(yaxis={"categoryorder": "total ascending"})
+            chart(fig)
+        except Exception as e:
+            st.error(f"Error: {e}")
 
     st.divider()
 
-    # High cost patients
+    # High cost patients scatter
     st.subheader("Top 20 High-Cost Patients")
     try:
         df = run_query(queries.HIGH_COST_PATIENTS)
         fig = px.scatter(
-            df,
-            x="RISK_SCORE",
-            y="TOTAL_SPEND",
-            color="RISK_TIER",
-            size="TOTAL_CLAIMS",
+            df, x="RISK_SCORE", y="TOTAL_SPEND",
+            color="RISK_TIER", size="TOTAL_CLAIMS",
             hover_data=["PATIENT_ID", "AGE_GROUP", "GENDER_LABEL"],
-            title="Risk Score vs Total Spend (bubble size = claim count)",
+            color_discrete_map={"Low": "#2ecc71", "Medium": "#f39c12", "High": "#e74c3c"},
             labels={"RISK_SCORE": "Risk Score", "TOTAL_SPEND": "Total Spend ($)", "RISK_TIER": "Risk Tier"},
+            title="Risk Score vs Total Spend  (bubble size = claim count)",
         )
-        st.plotly_chart(fig, use_container_width=True)
-
-        st.dataframe(df, use_container_width=True)
+        chart(fig)
+        with st.expander("View table"):
+            st.dataframe(df, use_container_width=True)
     except Exception as e:
         st.error(f"Error: {e}")
 
+
 # ════════════════════════════════════════════════════════════════════════════
-# TAB 3 — EHR
+# EHR
 # ════════════════════════════════════════════════════════════════════════════
 
 with tab_ehr:
 
     col_l, col_r = st.columns(2)
 
-    # Top conditions
     with col_l:
-        st.subheader("Top 10 Active Conditions")
+        st.subheader("Encounter Class Breakdown")
         try:
-            df = run_query(queries.TOP_CONDITIONS)
-            fig = px.bar(
-                df,
-                x="OCCURRENCE_COUNT",
-                y="ICD10_DISPLAY",
-                orientation="h",
-                color="CHRONIC_PCT",
-                color_continuous_scale="Reds",
-                text="OCCURRENCE_COUNT",
-                labels={"OCCURRENCE_COUNT": "Count", "ICD10_DISPLAY": "Condition", "CHRONIC_PCT": "Chronic %"},
+            df = run_query(queries.ENCOUNTER_BY_CLASS)
+            fig = px.pie(
+                df, names="ENCOUNTER_CLASS", values="VISIT_COUNT",
+                hole=0.4,
+                title="Visits by Class",
             )
-            fig.update_layout(yaxis={"categoryorder": "total ascending"})
-            st.plotly_chart(fig, use_container_width=True)
+            fig.update_traces(textposition="inside", textinfo="percent+label")
+            chart(fig)
+
+            fig2 = px.bar(
+                df, x="ENCOUNTER_CLASS", y="AVG_COST",
+                color="AVG_COST", color_continuous_scale="Oranges",
+                text="AVG_COST",
+                labels={"ENCOUNTER_CLASS": "Class", "AVG_COST": "Avg Cost ($)"},
+                title="Avg Cost per Encounter Class",
+            )
+            fig2.update_traces(texttemplate="$%{text:,.0f}", textposition="outside")
+            chart(fig2)
         except Exception as e:
             st.error(f"Error: {e}")
 
-    # Encounter breakdown
     with col_r:
-        st.subheader("Encounter Type Breakdown")
+        st.subheader("Encounters by Month")
         try:
-            df = run_query(queries.ENCOUNTER_BREAKDOWN)
+            df = run_query(queries.ENCOUNTERS_BY_MONTH)
             fig = px.bar(
-                df,
-                x="ENCOUNTER_CLASS",
-                y=["VISIT_COUNT", "EMERGENCY_VISITS"],
-                barmode="group",
-                title="Visits by Encounter Class",
-                labels={"value": "Count", "ENCOUNTER_CLASS": "Class", "variable": "Type"},
+                df, x="MONTH_LABEL", y="ENCOUNTER_COUNT",
+                text="ENCOUNTER_COUNT",
+                labels={"MONTH_LABEL": "Month", "ENCOUNTER_COUNT": "Encounters"},
+                title="Encounter Count per Month",
             )
-            st.plotly_chart(fig, use_container_width=True)
+            fig.update_traces(textposition="outside")
+            chart(fig)
 
-            fig2 = px.bar(
-                df,
-                x="ENCOUNTER_CLASS",
-                y="AVG_COST",
-                color="AVG_DURATION_HOURS",
-                color_continuous_scale="Viridis",
-                title="Average Cost per Encounter Class",
-                labels={"AVG_COST": "Avg Cost ($)", "ENCOUNTER_CLASS": "Class", "AVG_DURATION_HOURS": "Avg Duration (hrs)"},
+            fig2 = px.line(
+                df, x="MONTH_LABEL", y="TOTAL_COST",
+                markers=True,
+                labels={"MONTH_LABEL": "Month", "TOTAL_COST": "Total Cost ($)"},
+                title="Encounter Total Cost per Month",
             )
-            st.plotly_chart(fig2, use_container_width=True)
+            chart(fig2)
+        except Exception as e:
+            st.error(f"Error: {e}")
+
+    st.divider()
+    col_l2, col_r2 = st.columns(2)
+
+    with col_l2:
+        st.subheader("Top 10 Medications")
+        try:
+            df = run_query(queries.TOP_MEDICATIONS)
+            fig = px.bar(
+                df, x="PRESCRIPTION_COUNT", y="DRUG_NAME",
+                orientation="h",
+                color="CHRONIC_COUNT", color_continuous_scale="Reds",
+                text="PRESCRIPTION_COUNT",
+                labels={"PRESCRIPTION_COUNT": "Count", "DRUG_NAME": "Drug", "CHRONIC_COUNT": "Chronic Rxs"},
+            )
+            fig.update_layout(yaxis={"categoryorder": "total ascending"})
+            chart(fig)
+        except Exception as e:
+            st.error(f"Error: {e}")
+
+    with col_r2:
+        st.subheader("Medication: Chronic vs Acute")
+        try:
+            df = run_query(queries.MEDICATION_CHRONIC_SPLIT)
+            fig = px.pie(
+                df, names="MED_TYPE", values="COUNT",
+                color_discrete_sequence=["#e74c3c", "#3498db"],
+                hole=0.4,
+            )
+            fig.update_traces(textposition="inside", textinfo="percent+label")
+            chart(fig)
         except Exception as e:
             st.error(f"Error: {e}")
 
     st.divider()
 
-    col_l2, col_r2 = st.columns(2)
-
-    # Age group vs chronic rate
-    with col_l2:
-        st.subheader("Age Group vs Chronic Disease Rate")
-        try:
-            df = run_query(queries.AGE_CHRONIC_RATE)
+    st.subheader("Top Lab Tests & Abnormal Rates")
+    try:
+        col_l3, col_r3 = st.columns(2)
+        with col_l3:
+            df = run_query(queries.TOP_OBSERVATIONS)
             fig = px.bar(
-                df,
-                x="AGE_GROUP",
-                y="PCT_WITH_CONDITION",
-                color="CHRONIC_CONDITION_COUNT",
-                color_continuous_scale="Oranges",
-                text="PCT_WITH_CONDITION",
-                title="% Patients with Conditions by Age Group",
-                labels={"PCT_WITH_CONDITION": "% With Condition", "AGE_GROUP": "Age Group"},
+                df, x="OBS_COUNT", y="OBSERVATION_NAME",
+                orientation="h",
+                color="ABNORMAL_PCT", color_continuous_scale="RdYlGn_r",
+                text="OBS_COUNT",
+                labels={"OBS_COUNT": "Count", "OBSERVATION_NAME": "Test", "ABNORMAL_PCT": "Abnormal %"},
+                title="Observation Volume (color = abnormal %)",
+            )
+            fig.update_layout(yaxis={"categoryorder": "total ascending"})
+            chart(fig)
+
+        with col_r3:
+            df2 = run_query(queries.ABNORMAL_BY_TEST)
+            fig = px.bar(
+                df2, x="ABNORMAL_PCT", y="TEST_NAME",
+                orientation="h",
+                color="ABNORMAL_PCT", color_continuous_scale="Reds",
+                text="ABNORMAL_PCT",
+                labels={"ABNORMAL_PCT": "Abnormal %", "TEST_NAME": "Test"},
+                title="Abnormal Rate by Lab Test (%)",
             )
             fig.update_traces(texttemplate="%{text}%", textposition="outside")
-            st.plotly_chart(fig, use_container_width=True)
-        except Exception as e:
-            st.error(f"Error: {e}")
+            fig.update_layout(yaxis={"categoryorder": "total ascending"})
+            chart(fig)
+    except Exception as e:
+        st.error(f"Error: {e}")
 
-    # Abnormal lab results
-    with col_r2:  # noqa
-        st.subheader("Abnormal Lab Results by Category")
-        try:
-            df = run_query(queries.ABNORMAL_LABS)
-            fig = px.bar(
-                df,
-                x="CATEGORY",
-                y=["TOTAL_OBSERVATIONS", "ABNORMAL_COUNT"],
-                barmode="overlay",
-                title="Total vs Abnormal Observations",
-                labels={"value": "Count", "CATEGORY": "Category", "variable": "Type"},
-                color_discrete_map={
-                    "TOTAL_OBSERVATIONS": "#B0C4DE",
-                    "ABNORMAL_COUNT": "#DC143C",
-                },
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-            fig2 = px.pie(
-                df,
-                names="CATEGORY",
-                values="ABNORMAL_COUNT",
-                title="Abnormal Count Share by Category",
-                hole=0.35,
-            )
-            st.plotly_chart(fig2, use_container_width=True)
-        except Exception as e:
-            st.error(f"Error: {e}")
 
 # ════════════════════════════════════════════════════════════════════════════
-# TAB 4 — DIAGNOSTICS
+# DIAGNOSTICS
 # ════════════════════════════════════════════════════════════════════════════
 
 with tab_diag:
     st.subheader("Table Row Counts")
-    st.caption("Check how many rows Snowpipe has loaded into each table.")
     try:
         df = run_query(queries.TABLE_ROW_COUNTS)
-        total = int(df["ROW_COUNT"].sum())
-        if total == 0:
-            st.warning("All tables are empty — Snowpipe may not have loaded data yet. Run your Glue jobs and wait ~60 seconds.")
-        else:
-            empty = df[df["ROW_COUNT"] == 0]["TABLE_NAME"].tolist()
-            if empty:
-                st.warning(f"These tables have 0 rows: {', '.join(empty)}")
-            fig = px.bar(
-                df,
-                x="TABLE_NAME",
-                y="ROW_COUNT",
-                color="ROW_COUNT",
-                color_continuous_scale="Blues",
-                text="ROW_COUNT",
-                title="Rows per Table",
-            )
-            fig.update_layout(xaxis_tickangle=-30)
-            fig.update_traces(textposition="outside")
-            st.plotly_chart(fig, use_container_width=True)
-            st.dataframe(df, use_container_width=True)
+        fig = px.bar(
+            df, x="TABLE_NAME", y="ROW_COUNT",
+            color="ROW_COUNT", color_continuous_scale="Blues",
+            text="ROW_COUNT", title="Rows per Table",
+        )
+        fig.update_layout(xaxis_tickangle=-30)
+        fig.update_traces(textposition="outside")
+        chart(fig)
+        st.dataframe(df, use_container_width=True)
     except Exception as e:
         st.error(f"Error: {e}")
 
     st.divider()
-
-    # Null analysis
-    st.subheader("Null Analysis")
-    st.caption("For each key table, shows how many rows have non-null values in each column.")
-
-    col_a, col_b = st.columns(2)
-
-    with col_a:
-        st.markdown("**dim_patient_cms**")
-        try:
-            df = run_query(queries.NULL_CHECK_CMS_PATIENT)
-            total = int(df["TOTAL_ROWS"].iloc[0])
-            if total == 0:
-                st.info("Table is empty.")
-            else:
-                melted = df.melt(var_name="Column", value_name="Non-Null Count")
-                melted = melted[melted["Column"] != "TOTAL_ROWS"]
-                melted["Null %"] = round((1 - melted["Non-Null Count"] / total) * 100, 1)
-                melted["Fill %"] = 100 - melted["Null %"]
-                fig = px.bar(
-                    melted, x="Column", y="Fill %",
-                    color="Fill %", color_continuous_scale="RdYlGn",
-                    range_color=[0, 100],
-                    title=f"Column fill rate (total rows: {total:,})",
-                    text="Fill %",
-                )
-                fig.update_traces(texttemplate="%{text}%", textposition="outside")
-                fig.update_layout(xaxis_tickangle=-30, yaxis_range=[0, 110])
-                st.plotly_chart(fig, use_container_width=True)
-        except Exception as e:
-            st.error(f"Error: {e}")
-
-    with col_b:
-        st.markdown("**fact_claims**")
-        try:
-            df = run_query(queries.NULL_CHECK_FACT_CLAIMS)
-            total = int(df["TOTAL_ROWS"].iloc[0])
-            if total == 0:
-                st.info("Table is empty.")
-            else:
-                melted = df.melt(var_name="Column", value_name="Non-Null Count")
-                melted = melted[melted["Column"] != "TOTAL_ROWS"]
-                melted["Fill %"] = round(melted["Non-Null Count"] / total * 100, 1)
-                fig = px.bar(
-                    melted, x="Column", y="Fill %",
-                    color="Fill %", color_continuous_scale="RdYlGn",
-                    range_color=[0, 100],
-                    title=f"Column fill rate (total rows: {total:,})",
-                    text="Fill %",
-                )
-                fig.update_traces(texttemplate="%{text}%", textposition="outside")
-                fig.update_layout(xaxis_tickangle=-30, yaxis_range=[0, 110])
-                st.plotly_chart(fig, use_container_width=True)
-        except Exception as e:
-            st.error(f"Error: {e}")
-
-    st.markdown("**fact_encounters**")
-    try:
-        df = run_query(queries.NULL_CHECK_EHR_ENCOUNTERS)
-        total = int(df["TOTAL_ROWS"].iloc[0])
-        if total == 0:
-            st.info("Table is empty.")
-        else:
-            melted = df.melt(var_name="Column", value_name="Non-Null Count")
-            melted = melted[melted["Column"] != "TOTAL_ROWS"]
-            melted["Fill %"] = round(melted["Non-Null Count"] / total * 100, 1)
-            fig = px.bar(
-                melted, x="Column", y="Fill %",
-                color="Fill %", color_continuous_scale="RdYlGn",
-                range_color=[0, 100],
-                title=f"Column fill rate (total rows: {total:,})",
-                text="Fill %",
-            )
-            fig.update_traces(texttemplate="%{text}%", textposition="outside")
-            fig.update_layout(xaxis_tickangle=-30, yaxis_range=[0, 110])
-            st.plotly_chart(fig, use_container_width=True)
-    except Exception as e:
-        st.error(f"Error: {e}")
-
-    st.divider()
-
-    # Sample data viewer
     st.subheader("Sample Data Viewer")
-    sample_table = st.selectbox(
-        "Pick a table to preview (5 rows):",
-        ["dim_patient_cms", "fact_claims", "fact_encounters", "fact_conditions"],
-    )
+    tbl = st.selectbox("Table:", ["dim_patient_cms", "fact_claims", "fact_encounters", "fact_medications"])
     sample_map = {
-        "dim_patient_cms":  queries.SAMPLE_CMS_PATIENT,
-        "fact_claims":      queries.SAMPLE_FACT_CLAIMS,
-        "fact_encounters":  queries.SAMPLE_ENCOUNTERS,
-        "fact_conditions":  queries.SAMPLE_CONDITIONS,
+        "dim_patient_cms": queries.SAMPLE_CMS_PATIENT,
+        "fact_claims":     queries.SAMPLE_FACT_CLAIMS,
+        "fact_encounters": queries.SAMPLE_ENCOUNTERS,
+        "fact_medications": queries.SAMPLE_MEDICATIONS,
     }
     try:
-        df = run_query(sample_map[sample_table])
-        if df.empty:
-            st.info("No rows yet.")
-        else:
-            st.dataframe(df, use_container_width=True)
-            null_pct = (df.isnull().sum() / len(df) * 100).reset_index()
-            null_pct.columns = ["Column", "Null %"]
-            null_pct = null_pct[null_pct["Null %"] > 0].sort_values("Null %", ascending=False)
-            if not null_pct.empty:
-                st.markdown("**Columns with nulls in this sample:**")
-                st.dataframe(null_pct, use_container_width=True)
-            else:
-                st.success("No nulls in this 5-row sample.")
+        df = run_query(sample_map[tbl])
+        st.dataframe(df, use_container_width=True)
+        null_pct = (df.isnull().sum() / len(df) * 100).reset_index()
+        null_pct.columns = ["Column", "Null %"]
+        null_pct = null_pct[null_pct["Null %"] > 0].sort_values("Null %", ascending=False)
+        if not null_pct.empty:
+            st.markdown("**Columns with nulls in this sample:**")
+            st.dataframe(null_pct, use_container_width=True)
     except Exception as e:
         st.error(f"Error: {e}")
